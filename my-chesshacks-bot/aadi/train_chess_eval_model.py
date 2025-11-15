@@ -10,6 +10,7 @@ app = modal.App("chess-eval-cnn")
 
 # Persistent storage for models
 VOLUME_NAME = "chess-models"
+CACHE_VOLUME_NAME = "chess-dataset-cache"
 
 
 # Image with dependencies installed
@@ -18,8 +19,8 @@ image = (
     modal.Image.debian_slim()
     .pip_install(
         [
-            "numpy",
             "torch",
+            "numpy",
             "datasets",
             "python-chess",
             "tqdm",
@@ -28,6 +29,7 @@ image = (
 )
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+cache_volume = modal.Volume.from_name(CACHE_VOLUME_NAME, create_if_missing=True)
 
 
 # ---------- Training Config ----------
@@ -37,13 +39,15 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     model_out: str = "chess_eval_cnn.pt"
-    max_positions: int = 200_000
+    max_positions: int = 1_000_000  # Use more data
     train_fraction: float = 0.9
-    batch_size: int = 256
-    epochs: int = 5
-    lr: float = 1e-3
+    batch_size: int = 128  # Reduce for larger model
+    epochs: int = 30  # More epochs for convergence
+    lr: float = 5e-4  # Lower learning rate
     cp_scale: float = 1000.0
     num_workers: int = 4
+    num_blocks: int = 10  # Add this
+    num_channels: int = 256  # Add this
 
 
 CFG = Config()
@@ -57,9 +61,12 @@ CFG = Config()
 # ---------- Remote training function ----------
 @app.function(
     image=image,
-    gpu="A10G",  # or "T4", "A100", etc. depending on your Modal plan
-    volumes={"/models": volume},
-    timeout=60 * 60 * 4,  # up to 4 hours, adjust as needed
+    gpu="B200",
+    volumes={
+        "/models": volume,
+        "/cache": cache_volume,  # Mount cache volume
+    },
+    timeout=60 * 60 * 14,
 )
 def train_remote(cfg_dict: dict):
     # Reconstruct config on the worker
@@ -109,6 +116,8 @@ def train_remote(cfg_dict: dict):
         def __init__(self, hf_dataset, cp_scale: float):
             self.data = hf_dataset
             self.cp_scale = cp_scale
+            # Set a very high value for mate (e.g., 10000 centipawns)
+            self.mate_value = 10000.0
 
         def __len__(self):
             return len(self.data)
@@ -117,46 +126,100 @@ def train_remote(cfg_dict: dict):
             row = self.data[idx]
             fen = row["fen"]
             cp = row["cp"]
+            mate = row["mate"]
+            
             x = fen_to_tensor(fen)
-            # Convert to float32 explicitly
-            y = float(cp) / self.cp_scale
-            y = np.float32(y)  # Ensure it's float32, not float64
+            
+            # Handle mate vs centipawn evaluation
+            if mate is not None:
+                # Mate value: positive if white is winning, negative if black is winning
+                # Mate in N moves -> use mate_value
+                if mate > 0:
+                    eval_cp = self.mate_value
+                else:
+                    eval_cp = -self.mate_value
+            elif cp is not None:
+                eval_cp = float(cp)
+            else:
+                # Skip positions with neither cp nor mate (shouldn't happen)
+                # But as a fallback, use 0
+                eval_cp = 0.0
+            
+            # Normalize by cp_scale
+            y = eval_cp / self.cp_scale
+            y = torch.tensor(y, dtype=torch.float32)
+            
             return x, y
 
 
-    class ChessEvalCNN(nn.Module):
-        def __init__(self):
+    class ResidualBlock(nn.Module):
+        def __init__(self, channels):
             super().__init__()
-            self.conv = nn.Sequential(
-                nn.Conv2d(13, 64, kernel_size=3, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.Conv2d(64, 64, kernel_size=3, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.Conv2d(64, 64, kernel_size=3, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
+            self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.bn1 = nn.BatchNorm2d(channels)
+            self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.bn2 = nn.BatchNorm2d(channels)
+            
+        def forward(self, x):
+            residual = x
+            out = torch.relu(self.bn1(self.conv1(x)))
+            out = self.bn2(self.conv2(out))
+            out += residual
+            out = torch.relu(out)
+            return out
+
+    class ChessEvalCNN(nn.Module):
+        def __init__(self, num_blocks=10, num_channels=256):
+            super().__init__()
+            # Initial convolution
+            self.conv_input = nn.Sequential(
+                nn.Conv2d(13, num_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(num_channels),
+                nn.ReLU()
             )
-            self.head = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
-                nn.Flatten(),
-                nn.Linear(64, 64),
+            
+            # Residual tower
+            self.residual_blocks = nn.Sequential(
+                *[ResidualBlock(num_channels) for _ in range(num_blocks)]
+            )
+            
+            # Value head
+            self.value_head = nn.Sequential(
+                nn.Conv2d(num_channels, 32, kernel_size=1),
+                nn.BatchNorm2d(32),
                 nn.ReLU(),
-                nn.Linear(64, 1),
+                nn.Flatten(),
+                nn.Linear(32 * 8 * 8, 256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, 1)
             )
 
         def forward(self, x):
-            x = self.conv(x)
-            x = self.head(x)
+            x = self.conv_input(x)
+            x = self.residual_blocks(x)
+            x = self.value_head(x)
             return x.squeeze(-1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Worker] Using device: {device}")
 
+    # Set cache directory for Hugging Face datasets
+    import os
+    os.environ["HF_DATASETS_CACHE"] = "/cache/huggingface"
+    
     print("[Worker] Loading dataset from Hugging Face...")
-    dset = load_dataset("Lichess/chess-position-evaluations", split="train")
-    dset = dset.filter(lambda ex: ex["cp"] is not None)
+    try:
+        dset = load_dataset(
+            "Lichess/chess-position-evaluations", 
+            split="train",
+            cache_dir="/cache/huggingface"  # Explicitly set cache
+        )
+        # Don't filter out positions - we'll handle mate in the dataset class
+        print(f"[Worker] Loaded {len(dset)} positions")
+    except Exception as e:
+        print(f"[Worker] Error loading dataset: {e}")
+        raise
 
     if cfg.max_positions is not None and cfg.max_positions < len(dset):
         dset = dset.shuffle(seed=42).select(range(cfg.max_positions))
@@ -256,7 +319,12 @@ def train_remote(cfg_dict: dict):
             print(f"[Worker] Volume committed")
 
     print(f"[Worker] Training complete. Best val loss: {best_val_loss:.6f}")
-    # Return the path within the volume (for logging)
+
+    # Commit both volumes
+    volume.commit()
+    cache_volume.commit()  # Commit cache to persist dataset
+    print("[Worker] Volumes committed")
+    
     return cfg.model_out
 
 
