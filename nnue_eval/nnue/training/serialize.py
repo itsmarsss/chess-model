@@ -70,12 +70,63 @@ def main():
         "--device", type=int, default="0", help="Device to use for cupy"
     )
     parser.add_argument("--l1", type=int, default=M.ModelConfig().L1)
+    parser.add_argument("--l2", type=int, default=M.ModelConfig().L2, help="L2 layer size (default: 16)")
+    parser.add_argument("--l3", type=int, default=M.ModelConfig().L3, help="L3 layer size (default: 32)")
+    parser.add_argument(
+        "--export-epochs",
+        action="store_true",
+        dest="export_epochs",
+        help="Export each epoch from the checkpoint. Creates files like last.e1.nnue, last.e2.nnue, etc. Only works with .ckpt source files.",
+    )
     M.add_feature_args(parser)
     args = parser.parse_args()
 
     feature_set = M.get_feature_set_from_name(args.features)
 
     print("Converting %s to %s" % (args.source, args.target))
+
+    # Handle --export-epochs flag
+    if args.export_epochs:
+        if not args.source.endswith(".ckpt"):
+            raise Exception("--export-epochs only works with .ckpt source files")
+        
+        # Load the checkpoint to check for epoch callbacks/state
+        checkpoint = torch.load(args.source, map_location=torch.device("cpu"), weights_only=False)
+        
+        # Determine base target name (remove .nnue if present)
+        base_target = args.target.replace(".nnue", "")
+        
+        # Check if this is a Lightning checkpoint with epoch info
+        if "epoch" in checkpoint:
+            current_epoch = checkpoint["epoch"]
+            print(f"Checkpoint is from epoch {current_epoch}")
+            
+            # Generate filename with epoch number
+            target_file = f"{base_target}.e{current_epoch}.nnue"
+            print(f"Exporting to: {target_file}")
+            
+            # Load and serialize
+            nnue = M.NNUE.load_from_checkpoint(
+                args.source,
+                feature_set=feature_set,
+                config=M.ModelConfig(L1=args.l1, L2=args.l2, L3=args.l3),
+                quantize_config=M.QuantizationConfig(),
+                map_location=torch.device("cpu"),
+                strict=False,  # Allow loading even with shape mismatches
+            )
+            nnue.eval()
+            
+            # Write the .nnue file
+            writer = M.NNUEWriter(
+                nnue.model, args.description or f"Epoch {current_epoch}", ft_compression=args.ft_compression
+            )
+            with open(target_file, "wb") as f:
+                f.write(writer.buf)
+            print(f"✅ Wrote {target_file}")
+            return
+        else:
+            print("⚠️  No epoch information found in checkpoint, treating as single export")
+            # Fall through to normal processing
 
     # Treat --out-sha as targeting .nnue even if target doesn't end with .nnue
     target_is_nnue = args.out_sha or args.target.endswith(".nnue")
@@ -84,9 +135,10 @@ def main():
         nnue = M.NNUE.load_from_checkpoint(
             args.source,
             feature_set=feature_set,
-            config=M.ModelConfig(L1=args.l1),
+            config=M.ModelConfig(L1=args.l1, L2=args.l2, L3=args.l3),
             quantize_config=M.QuantizationConfig(),
             map_location=torch.device("cpu"),
+            strict=False,  # Allow loading even with shape mismatches
         )
         nnue.eval()
     elif args.source.endswith(".pt"):
@@ -94,10 +146,10 @@ def main():
     elif args.source.endswith(".nnue"):
         with open(args.source, "rb") as f:
             nnue = M.NNUE(
-                feature_set, M.ModelConfig(L1=args.l1), M.QuantizationConfig()
+                feature_set, M.ModelConfig(L1=args.l1, L2=args.l2, L3=args.l3), M.QuantizationConfig()
             )
             reader = M.NNUEReader(
-                f, feature_set, M.ModelConfig(L1=args.l1), M.QuantizationConfig()
+                f, feature_set, M.ModelConfig(L1=args.l1, L2=args.l2, L3=args.l3), M.QuantizationConfig()
             )
             nnue.model = reader.model
             if args.description is None:

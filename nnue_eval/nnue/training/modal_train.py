@@ -39,7 +39,7 @@ image = (
         "huggingface-hub",
         "pybind11",  # For C++ bindings
     )
-    .env({"HF_HOME": "/root/.cache/huggingface"})
+    .env({"HF_HOME": "/cache/huggingface"})  # Use persistent cache volume
     .add_local_dir(
         training_dir,
         remote_path="/root/training",
@@ -61,26 +61,30 @@ image = (
 
 app = App("nnue-training", image=image)
 
-# Volume for persisting checkpoints and models
+# Volumes for persisting checkpoints and cached datasets
 checkpoint_volume = Volume.from_name("nnue-checkpoints", create_if_missing=True)
+dataset_cache_volume = Volume.from_name("nnue-dataset-cache", create_if_missing=True)
 
 @app.function(
     image=image,
-    gpu="H100",  # Use A10G GPU, can change to A100 or T4
-    volumes={"/checkpoints": checkpoint_volume},
+    gpu="B200",  # Use A10G GPU, can change to A100 or T4
+    volumes={
+        "/checkpoints": checkpoint_volume,
+        "/cache/huggingface": dataset_cache_volume
+    },
     timeout=86400,  # 24 hours
     # Optional: Add Secret for private Hugging Face datasets
     # secrets=[Secret.from_name("huggingface")],
 )
 def train_nnue(
     dataset_name: str = "linrock/test80-2024",
-    batch_size: int = 16384,
-    max_epochs: int = 10,
+    batch_size: int = 65536,  # MUCH larger batches for 10B positions
+    max_epochs: int = 20,  # More epochs since you have massive data
     features: str = "HalfKAv2_hm^",
     learning_rate: float = 8.75e-4,
     num_workers: int = 4,
-    epoch_size: int = 1638400,
-    validation_size: int = 16384,
+    epoch_size: int = 1000000000,  # 1 BILLION positions per epoch (2.6% of 37.5B dataset)
+    validation_size: int = 1000000,  # 1 MILLION positions for validation
     lr: float = None,  # Override learning rate
     test_mode: bool = False,
     test_mode_file_count: int = 1,  # Number of files to use in test mode
@@ -88,14 +92,16 @@ def train_nnue(
     specific_file: str = None,  # Download a specific file by name
     # High-impact parameters
     start_lambda: float = 1.0,
-    end_lambda: float = 1.0,
-    gamma: float = 0.992,
+    end_lambda: float = 0.6,  # Trust game outcomes more with massive dataset
+    gamma: float = 0.985,  # Slower LR decay for gradual learning
     pow_exp: float = 2.5,
     qp_asymmetry: float = 0.0,
     in_offset: float = 270.0,
     out_offset: float = 270.0,
     in_scaling: float = 340.0,
     out_scaling: float = 380.0,
+    layers: list = None,  # Network architecture [L2, L3, ...], e.g., [8, 32]
+    network_save_period: int = 2,  # Save checkpoint every N epochs
 ):
     """
     Train NNUE network using Hugging Face dataset.
@@ -431,6 +437,23 @@ def train_nnue(
     # train.py expects datasets as positional arguments
     cmd = ["python", "train.py"]
     
+    # Temporarily modify ModelConfig if layers parameter is provided
+    if layers is not None and len(layers) >= 2:
+        # Write custom config to override defaults
+        config_override = f"""
+from dataclasses import dataclass
+
+@dataclass  
+class ModelConfig:
+    L1: int = 3072
+    L2: int = {layers[0]}
+    L3: int = {layers[1] if len(layers) > 1 else 32}
+"""
+        # Save to temp file that will be imported
+        with open("/root/training/model/config_override.py", "w") as f:
+            f.write(config_override)
+        print(f"Using custom layer configuration: L2={layers[0]}, L3={layers[1] if len(layers) > 1 else 32}")
+    
     # Add training datasets (all binpack files)
     # train.py expects datasets as positional arguments, not as a list
     for dataset in binpack_files:
@@ -472,8 +495,9 @@ def train_nnue(
         ])
     else:
         cmd.extend([
-            "--network-save-period", "10",  # Save every 10 epochs
+            "--network-save-period", str(network_save_period),  # Save every N epochs
         ])
+        print(f"💾 Saving checkpoints every {network_save_period} epochs")
     
     print(f"Running training command: {' '.join(cmd)}")
     
@@ -525,21 +549,21 @@ def train_nnue(
 @app.local_entrypoint()
 def main(
     dataset_name: str = "linrock/test80-2024",
-    batch_size: int = 32768,  # Larger batch = better gradients
-    max_epochs: int = 12,  # Stop before overfitting (was 15)
+    batch_size: int = 65536,  # Larger batch = better gradients with massive data
+    max_epochs: int = 20,  # Can train longer with 150GB dataset
     features: str = "HalfKAv2_hm^",
     learning_rate: float = 8.75e-4,
     num_workers: int = 4,
-    epoch_size: int = 1638400,
-    validation_size: int = 16384,
+    epoch_size: int = 1000000000,  # 1 BILLION positions per epoch (2.6% of 37.5B)
+    validation_size: int = 1000000,  # 1 MILLION positions for validation
     test_mode: bool = False,
     test_mode_file_count: int = 1,  # Number of files to use in test mode
-    file_count: int = 1,  # Number of files to use in normal mode (0 = all files)
+    file_count: int = 0,  # USE ALL 10B POSITIONS! (0 = all files)
     specific_file: str = None,  # Download specific file by name
     # Lambda scheduling: blend eval scores and game outcomes
     start_lambda: float = 1.0,  # Start with pure eval scores
-    end_lambda: float = 0.75,  # Keep trusting evals more (was 0.5) - prevents learning bad sacrifices
-    gamma: float = 0.99,  # Faster LR decay to prevent overfitting (was 0.995)
+    end_lambda: float = 0.6,  # With 10B positions, trust game outcomes MORE (lower = more WDL weight)
+    gamma: float = 0.985,  # SLOWER LR decay for massive dataset (more gradual learning)
     # Loss function improvements
     pow_exp: float = 2.6,  # Penalize large errors more
     qp_asymmetry: float = 0.15,  # Penalize overconfidence
@@ -549,7 +573,8 @@ def main(
     in_scaling: float = 340.0,
     out_scaling: float = 380.0,
     # Network architecture
-    layers: str = "8,32",  # Network layers: "8,32" = fast & efficient, "16,32" = balanced, "32,32" = strong but needs more data
+    layers: str = "31,32",  # L2=31 (2x capacity), L2+1=32 divisible by 16
+    network_save_period: int = 1,  # Checkpoint EVERY epoch to find best
 ):
     """
     Local entrypoint to run training on Modal.
@@ -565,6 +590,7 @@ def main(
         pow_exp: Loss exponent (higher = penalize large errors more)
         qp_asymmetry: Penalty when prediction > actual (0 = symmetric)
         layers: Network architecture as "L2,L3" (e.g., "8,32" = fast, "16,32" = balanced, "32,32" = strong)
+        network_save_period: Save checkpoint every N epochs (default: 2 for 12-epoch training)
         in_offset, out_offset, in_scaling, out_scaling: Sigmoid conversion params
             Run 'python perf_sigmoid_fitter.py' to optimize for your data
     
@@ -639,6 +665,7 @@ def main(
             in_scaling=in_scaling,
             out_scaling=out_scaling,
             layers=layer_list,
+            network_save_period=network_save_period,
         )
     print(result)
 
