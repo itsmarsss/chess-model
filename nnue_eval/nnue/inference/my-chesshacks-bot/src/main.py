@@ -4,8 +4,6 @@ import time
 import os
 import sys
 from pathlib import Path
-import io
-import contextlib
 
 # Load environment variables from .env.local
 from dotenv import load_dotenv
@@ -31,7 +29,7 @@ def get_nnue():
     if _nnue is None and NNUE_AVAILABLE:
         try:
             # Get model path from environment variable or use default
-            model_name = os.getenv("NNUE_MODEL", "last.nnue")
+            model_name = os.getenv("NNUE_MODEL", "../custom/src/nn-49c1193b131c.nnue")
             
             # Try to find the model file
             # Path structure: src/main.py -> src/ -> my-chesshacks-bot/ -> inference/
@@ -41,25 +39,26 @@ def get_nnue():
             
             # Try multiple locations
             possible_paths = [
-                inference_dir / "models" / model_name,  # inference/models/ (most common)
+                Path(model_name) if Path(model_name).is_absolute() else None,
+                inference_dir / model_name,  # Relative to inference/
+                inference_dir / "models" / model_name,  # inference/models/
             ]
             
             model_path = None
             for path in possible_paths:
-                if path.exists() and path.is_file():
+                if path and path.exists() and path.is_file():
                     model_path = path
                     break
             
             if model_path:
-                # Suppress NNUE initialization output during first load
-                stderr_buffer = io.StringIO()
-                with contextlib.redirect_stderr(stderr_buffer):
-                    _nnue = NNUE(str(model_path))
+                # Initialize NNUE directly (output filtering handled by decorator)
+                _nnue = NNUE(str(model_path))
                 print(f"✓ NNUE initialized with model: {model_path}", file=sys.stderr)
             else:
                 print(f"Warning: NNUE model not found. Tried:", file=sys.stderr)
                 for path in possible_paths:
-                    print(f"  - {path}", file=sys.stderr)
+                    if path:
+                        print(f"  - {path}", file=sys.stderr)
                 print("Falling back to random moves.", file=sys.stderr)
                 print("Set NNUE_MODEL environment variable to specify model file.", file=sys.stderr)
         except Exception as e:

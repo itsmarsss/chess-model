@@ -7,10 +7,6 @@ import os
 import sys
 from pathlib import Path
 
-# Suppress NNUE initialization output by redirecting stderr during imports
-import io
-import contextlib
-
 # Load environment variables from .env.local if it exists
 # MUST be done BEFORE importing src.main so the env var is available
 try:
@@ -45,17 +41,9 @@ except Exception:
     # Silently continue on any other error
     pass
 
-# Suppress the initialization output from NNUE by capturing stderr during import
-stderr_buffer = io.StringIO()
-with contextlib.redirect_stderr(stderr_buffer):
-    # Now import main (after env vars are loaded)
-    from src.utils import chess_manager
-    from src import main
-
-# Log what was suppressed only if there are actual errors
-init_output = stderr_buffer.getvalue()
-if "error" in init_output.lower() or "failed" in init_output.lower():
-    print(f"[INIT] {init_output}", file=sys.stderr)
+# Import main module
+from src.utils import chess_manager
+from src import main
 
 app = FastAPI()
 
