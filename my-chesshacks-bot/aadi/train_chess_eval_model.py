@@ -40,17 +40,17 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     model_out: str = "chess_eval_cnn.pt"
-    max_positions: int = None  # Use all available data
-    val_size: int = 100_000  # Keep validation set small but meaningful
-    batch_size: int = 128
-    epochs: int = 40
+    max_positions: int = 100000000  # Use ALL available data (no limit)
+    val_size: int = 10000000  # Keep validation set small but meaningful
+    batch_size: int = 512  # Increased for B200 GPU (192GB memory)
+    epochs: int = 1  # Proper training needs many epochs
     lr: float = 5e-4
     weight_decay: float = 1e-4  # Add weight decay for regularization
     lr_patience: int = 5  # Reduce LR if no improvement for 5 epochs
     lr_factor: float = 0.5  # Reduce LR by half when triggered
     cp_scale: float = 1000.0
-    num_workers: int = 4
-    num_blocks: int = 7  # Optimized for <10MB: 7 blocks for better depth
+    num_workers: int = 8
+    num_blocks: int = 6  # Optimized for <10MB: 6 blocks for better depth
     num_channels: int = 128  # Keep at 128
     value_head_channels: int = 32  # Increased from 16 to 32
     value_hidden: int = 256  # Increased from 128 to 256ses import dataclass
@@ -175,7 +175,7 @@ def train_remote(cfg_dict: dict):
             return out
 
     class ChessEvalCNN(nn.Module):
-        def __init__(self, num_blocks=7, num_channels=128, value_head_channels=32, value_hidden=256):
+        def __init__(self, num_blocks=6, num_channels=128, value_head_channels=32, value_hidden=256):
             super().__init__()
             # Initial convolution
             self.conv_input = nn.Sequential(
@@ -268,6 +268,9 @@ def train_remote(cfg_dict: dict):
         value_head_channels=cfg.value_head_channels,
         value_hidden=cfg.value_hidden
     ).to(device)
+    
+    # Compile model for faster training (PyTorch 2.0+)
+    model = torch.compile(model)
     optimizer = torch.optim.Adam(
         model.parameters(), 
         lr=cfg.lr, 
