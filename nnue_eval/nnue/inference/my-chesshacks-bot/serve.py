@@ -101,5 +101,18 @@ async def get_move(request: Request):
     return JSONResponse(content={"move": move.uci(), "error": None, "time_taken": time_taken, "move_probs": move_probs_dict, "logs": logs})
 
 if __name__ == "__main__":
-    port = int(os.getenv("SERVE_PORT", "5058"))
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Chess bot server')
+    parser.add_argument('--port', type=int, default=None, help='Server port (default: from SERVE_PORT env or 5058)')
+    parser.add_argument('--model', type=str, default=None, help='NNUE model path (overrides NNUE_MODEL env var)')
+    args = parser.parse_args()
+    
+    # Override NNUE_MODEL env var if --model is specified
+    if args.model:
+        os.environ['NNUE_MODEL'] = args.model
+        print(f"Using model: {args.model}")
+    
+    port = args.port if args.port is not None else int(os.getenv("SERVE_PORT", "5058"))
+    print(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -66,7 +66,7 @@ checkpoint_volume = Volume.from_name("nnue-checkpoints", create_if_missing=True)
 
 @app.function(
     image=image,
-    gpu="A10G",  # Use A10G GPU, can change to A100 or T4
+    gpu="H100",  # Use A10G GPU, can change to A100 or T4
     volumes={"/checkpoints": checkpoint_volume},
     timeout=86400,  # 24 hours
     # Optional: Add Secret for private Hugging Face datasets
@@ -514,7 +514,7 @@ def main(
     validation_size: int = 16384,
     test_mode: bool = False,
     test_mode_file_count: int = 1,  # Number of files to use in test mode
-    max_files: int = 1,  # Default to 1 file for faster runs
+    file_count: int = 1,  # Number of files to use in normal mode (0 = all files)
     specific_file: str = None,  # Download specific file by name
 ):
     """
@@ -523,7 +523,7 @@ def main(
     Args:
         test_mode: If True, runs a quick 1-minute test to verify setup
         test_mode_file_count: Number of files to use when test_mode is True (default: 1)
-        max_files: Limit number of files to download (default: 1 for faster runs)
+        file_count: Number of files to use in normal mode (default: 1, use 0 for all files)
         specific_file: Download a specific file by name (e.g., "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst")
     
     Example:
@@ -533,14 +533,17 @@ def main(
         # Quick test with 3 files
         modal run modal_train.py --test-mode --test-mode-file-count 3
         
-        # Training with 1 file (faster)
-        modal run modal_train.py --dataset-name linrock/test80-2024 --max-files 1
+        # Training with 1 file (default)
+        modal run modal_train.py --dataset-name linrock/test80-2024
+        
+        # Training with 5 files
+        modal run modal_train.py --dataset-name linrock/test80-2024 --file-count 5
         
         # Training with specific file
         modal run modal_train.py --specific-file test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst
         
         # Full training (all files)
-        modal run modal_train.py --dataset-name linrock/test80-2024 --max-files 0
+        modal run modal_train.py --dataset-name linrock/test80-2024 --file-count 0
     """
     if test_mode:
         print(f"🧪 Running in TEST MODE - quick 1-minute verification with {test_mode_file_count} file(s)")
@@ -561,8 +564,8 @@ def main(
             specific_file=specific_file,
         )
     else:
-        # Convert max_files: 0 means all files, None means use default (1)
-        effective_max_files = None if max_files == 0 else (max_files if max_files else 1)
+        # Convert file_count: 0 means all files, otherwise use the specified count
+        effective_max_files = None if file_count == 0 else file_count
         
         result = train_nnue.remote(
             dataset_name=dataset_name,
