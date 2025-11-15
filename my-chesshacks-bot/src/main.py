@@ -4,33 +4,56 @@ import torch
 import torch.nn as nn
 import numpy as np
 import chess
+import os
 
 # ---------- Model Definition (must match training code) ----------
-class ChessEvalCNN(nn.Module):
-    def __init__(self):
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(13, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        
+    def forward(self, x):
+        residual = x
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual
+        out = torch.relu(out)
+        return out
+
+class ChessEvalCNN(nn.Module):
+    def __init__(self, num_blocks=10, num_channels=256):
+        super().__init__()
+        # Initial convolution
+        self.conv_input = nn.Sequential(
+            nn.Conv2d(13, num_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(num_channels),
+            nn.ReLU()
         )
-        self.head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(64, 64),
+        
+        # Residual tower
+        self.residual_blocks = nn.Sequential(
+            *[ResidualBlock(num_channels) for _ in range(num_blocks)]
+        )
+        
+        # Value head
+        self.value_head = nn.Sequential(
+            nn.Conv2d(num_channels, 32, kernel_size=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Flatten(),
+            nn.Linear(32 * 8 * 8, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 1)
         )
 
     def forward(self, x):
-        x = self.conv(x)
-        x = self.head(x)
+        x = self.conv_input(x)
+        x = self.residual_blocks(x)
+        x = self.value_head(x)
         return x.squeeze(-1)
 
 # ---------- Helper Functions ----------
@@ -77,19 +100,37 @@ def evaluate_position(model: ChessEvalCNN, board: chess.Board, device: torch.dev
 
 # ---------- Load Model Once ----------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = ChessEvalCNN().to(device)
 
-# Load the trained model weights
-# Make sure to download the model first using:
-# modal volume get chess-models /models/chess_eval_cnn.pt .
+# Get the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(script_dir, "chess_eval_cnn.pt")
+
+# Add debug output
+print(f"Script directory: {script_dir}")
+print(f"Looking for model at: {model_path}")
+print(f"Model file exists: {os.path.exists(model_path)}")
+
+model = None
+cp_scale = 1000.0
+
 try:
-    checkpoint = torch.load("chess_eval_cnn.pt", map_location=device)
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Extract config to get model parameters
+    config = checkpoint.get("config", {})
+    num_blocks = config.get("num_blocks", 10)
+    num_channels = config.get("num_channels", 256)
+    cp_scale = config.get("cp_scale", 1000.0)
+    
+    # Initialize model with correct architecture
+    model = ChessEvalCNN(num_blocks=num_blocks, num_channels=num_channels).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-    cp_scale = checkpoint["config"].get("cp_scale", 1000.0)
-    print(f"Model loaded successfully on {device}")
+    
+    print(f"Model loaded successfully from {model_path} on {device}")
+    print(f"Model architecture: {num_blocks} blocks, {num_channels} channels")
 except FileNotFoundError:
-    print("WARNING: Model file not found. Using random moves as fallback.")
+    print(f"WARNING: Model file not found at {model_path}. Using random moves as fallback.")
     model = None
 except Exception as e:
     print(f"WARNING: Error loading model: {e}. Using random moves as fallback.")
