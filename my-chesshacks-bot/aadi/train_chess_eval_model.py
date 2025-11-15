@@ -42,13 +42,14 @@ class Config:
     max_positions: int = 1_000_000  # Use more data
     train_fraction: float = 0.9
     batch_size: int = 128  # Reduce for larger model
-    epochs: int = 100  # More epochs for convergence
+    epochs: int = 50  # More epochs for convergence
     lr: float = 5e-4  # Lower learning rate
     cp_scale: float = 1000.0
     num_workers: int = 4
-    num_blocks: int = 6  # Reduced from 10 to 6
-    num_channels: int = 128  # Reduced from 256 to 128
-    value_hidden: int = 128  # Reduced FC layer size
+    num_blocks: int = 7  # Optimized for <10MB: 7 blocks for better depth
+    num_channels: int = 128  # Keep at 128
+    value_head_channels: int = 32  # Increased from 16 to 32
+    value_hidden: int = 256  # Increased from 128 to 256
 
 
 CFG = Config()
@@ -170,7 +171,7 @@ def train_remote(cfg_dict: dict):
             return out
 
     class ChessEvalCNN(nn.Module):
-        def __init__(self, num_blocks=6, num_channels=128, value_hidden=128):
+        def __init__(self, num_blocks=7, num_channels=128, value_head_channels=32, value_hidden=256):
             super().__init__()
             # Initial convolution
             self.conv_input = nn.Sequential(
@@ -184,16 +185,16 @@ def train_remote(cfg_dict: dict):
                 *[ResidualBlock(num_channels) for _ in range(num_blocks)]
             )
             
-            # Value head - more compact
+            # Value head - improved capacity
             self.value_head = nn.Sequential(
-                nn.Conv2d(num_channels, 16, kernel_size=1),  # Reduced from 32 to 16
-                nn.BatchNorm2d(16),
+                nn.Conv2d(num_channels, value_head_channels, kernel_size=1),
+                nn.BatchNorm2d(value_head_channels),
                 nn.ReLU(),
                 nn.Flatten(),
-                nn.Linear(16 * 8 * 8, value_hidden),  # 1024 -> value_hidden
+                nn.Linear(value_head_channels * 8 * 8, value_hidden),
                 nn.ReLU(),
                 nn.Dropout(0.3),
-                nn.Linear(value_hidden, 1)  # value_hidden -> 1
+                nn.Linear(value_hidden, 1)
             )
 
         def forward(self, x):
@@ -255,6 +256,7 @@ def train_remote(cfg_dict: dict):
     model = ChessEvalCNN(
         num_blocks=cfg.num_blocks,
         num_channels=cfg.num_channels,
+        value_head_channels=cfg.value_head_channels,
         value_hidden=cfg.value_hidden
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
