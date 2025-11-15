@@ -1,3 +1,4 @@
+
 __pycache__
 .venv
 venv
@@ -5,3 +6,47 @@ venv
 .env
 devtools
 ../../.venv
+=======
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Modal
+.modal/
+
+# Checkpoints and models
+*.ckpt
+*.pt
+*.nnue
+checkpoints/
+models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Training data
+*.binpack
+data/
+
