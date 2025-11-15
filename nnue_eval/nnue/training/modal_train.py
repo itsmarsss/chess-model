@@ -85,7 +85,17 @@ def train_nnue(
     test_mode: bool = False,
     test_mode_file_count: int = 1,  # Number of files to use in test mode
     max_files: int = None,  # Limit number of files to download (None = all)
-    specific_file: str = None,  # Download a specific file by name (e.g., "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst")
+    specific_file: str = None,  # Download a specific file by name
+    # High-impact parameters
+    start_lambda: float = 1.0,
+    end_lambda: float = 1.0,
+    gamma: float = 0.992,
+    pow_exp: float = 2.5,
+    qp_asymmetry: float = 0.0,
+    in_offset: float = 270.0,
+    out_offset: float = 270.0,
+    in_scaling: float = 340.0,
+    out_scaling: float = 380.0,
 ):
     """
     Train NNUE network using Hugging Face dataset.
@@ -442,6 +452,16 @@ def train_nnue(
         "--default_root_dir", "/checkpoints",
         "--epoch-size", str(epoch_size),
         "--validation-size", str(validation_size),
+        # High-impact parameters
+        "--start-lambda", str(start_lambda),
+        "--end-lambda", str(end_lambda),
+        "--gamma", str(gamma),
+        "--pow-exp", str(pow_exp),
+        "--qp-asymmetry", str(qp_asymmetry),
+        "--in-offset", str(in_offset),
+        "--out-offset", str(out_offset),
+        "--in-scaling", str(in_scaling),
+        "--out-scaling", str(out_scaling),
     ])
     
     if test_mode:
@@ -505,8 +525,8 @@ def train_nnue(
 @app.local_entrypoint()
 def main(
     dataset_name: str = "linrock/test80-2024",
-    batch_size: int = 16384,
-    max_epochs: int = 10,
+    batch_size: int = 32768,  # Larger batch = better gradients
+    max_epochs: int = 15,  # More epochs for better convergence
     features: str = "HalfKAv2_hm^",
     learning_rate: float = 8.75e-4,
     num_workers: int = 4,
@@ -516,6 +536,18 @@ def main(
     test_mode_file_count: int = 1,  # Number of files to use in test mode
     file_count: int = 1,  # Number of files to use in normal mode (0 = all files)
     specific_file: str = None,  # Download specific file by name
+    # Lambda scheduling: blend eval scores and game outcomes
+    start_lambda: float = 1.0,  # Start with pure eval scores
+    end_lambda: float = 0.5,  # End with 50% eval / 50% game results
+    gamma: float = 0.995,  # Slower LR decay for longer training
+    # Loss function improvements
+    pow_exp: float = 2.6,  # Penalize large errors more
+    qp_asymmetry: float = 0.15,  # Penalize overconfidence
+    # Sigmoid parameters (run perf_sigmoid_fitter.py to optimize these)
+    in_offset: float = 270.0,
+    out_offset: float = 270.0,
+    in_scaling: float = 340.0,
+    out_scaling: float = 380.0,
 ):
     """
     Local entrypoint to run training on Modal.
@@ -524,26 +556,29 @@ def main(
         test_mode: If True, runs a quick 1-minute test to verify setup
         test_mode_file_count: Number of files to use when test_mode is True (default: 1)
         file_count: Number of files to use in normal mode (default: 1, use 0 for all files)
-        specific_file: Download a specific file by name (e.g., "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst")
+        specific_file: Download a specific file by name
+        start_lambda: Lambda at first epoch (1.0 = pure evals, 0.0 = pure game results)
+        end_lambda: Lambda at last epoch (linear interpolation)
+        gamma: LR decay multiplier per epoch (0.995 = slower decay)
+        pow_exp: Loss exponent (higher = penalize large errors more)
+        qp_asymmetry: Penalty when prediction > actual (0 = symmetric)
+        in_offset, out_offset, in_scaling, out_scaling: Sigmoid conversion params
+            Run 'python perf_sigmoid_fitter.py' to optimize for your data
     
     Example:
         # Quick test (1 minute, 1 file)
         modal run modal_train.py --test-mode
         
-        # Quick test with 3 files
-        modal run modal_train.py --test-mode --test-mode-file-count 3
+        # Optimized training (high impact improvements)
+        modal run modal_train.py --file-count 5 --max-epochs 15
         
-        # Training with 1 file (default)
-        modal run modal_train.py --dataset-name linrock/test80-2024
+        # Custom lambda schedule
+        modal run modal_train.py --start-lambda 1.0 --end-lambda 0.3
         
-        # Training with 5 files
-        modal run modal_train.py --dataset-name linrock/test80-2024 --file-count 5
-        
-        # Training with specific file
-        modal run modal_train.py --specific-file test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst
-        
-        # Full training (all files)
-        modal run modal_train.py --dataset-name linrock/test80-2024 --file-count 0
+        # Optimize sigmoid params first (recommended):
+        # python perf_sigmoid_fitter.py
+        # Then use the suggested values:
+        modal run modal_train.py --in-offset 250 --out-offset 260 --in-scaling 350 --out-scaling 400
     """
     if test_mode:
         print(f"🧪 Running in TEST MODE - quick 1-minute verification with {test_mode_file_count} file(s)")
@@ -567,6 +602,15 @@ def main(
         # Convert file_count: 0 means all files, otherwise use the specified count
         effective_max_files = None if file_count == 0 else file_count
         
+        print(f"🚀 Starting optimized training:")
+        print(f"  • Batch size: {batch_size} (larger = better gradients)")
+        print(f"  • Max epochs: {max_epochs}")
+        print(f"  • Lambda schedule: {start_lambda} → {end_lambda} (eval/result blending)")
+        print(f"  • Gamma: {gamma} (LR decay per epoch)")
+        print(f"  • Loss: pow={pow_exp}, asymmetry={qp_asymmetry}")
+        print(f"  • Sigmoid: in_offset={in_offset}, out_offset={out_offset}")
+        print(f"  • Files: {file_count if file_count > 0 else 'all'}")
+        
         result = train_nnue.remote(
             dataset_name=dataset_name,
             batch_size=batch_size,
@@ -581,6 +625,15 @@ def main(
             test_mode_file_count=1,  # Not used when test_mode=False
             max_files=effective_max_files,
             specific_file=specific_file,
+            start_lambda=start_lambda,
+            end_lambda=end_lambda,
+            gamma=gamma,
+            pow_exp=pow_exp,
+            qp_asymmetry=qp_asymmetry,
+            in_offset=in_offset,
+            out_offset=out_offset,
+            in_scaling=in_scaling,
+            out_scaling=out_scaling,
         )
     print(result)
 
