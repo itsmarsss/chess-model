@@ -42,12 +42,13 @@ class Config:
     max_positions: int = 1_000_000  # Use more data
     train_fraction: float = 0.9
     batch_size: int = 128  # Reduce for larger model
-    epochs: int = 30  # More epochs for convergence
+    epochs: int = 100  # More epochs for convergence
     lr: float = 5e-4  # Lower learning rate
     cp_scale: float = 1000.0
     num_workers: int = 4
-    num_blocks: int = 10  # Add this
-    num_channels: int = 256  # Add this
+    num_blocks: int = 6  # Reduced from 10 to 6
+    num_channels: int = 128  # Reduced from 256 to 128
+    value_hidden: int = 128  # Reduced FC layer size
 
 
 CFG = Config()
@@ -169,7 +170,7 @@ def train_remote(cfg_dict: dict):
             return out
 
     class ChessEvalCNN(nn.Module):
-        def __init__(self, num_blocks=10, num_channels=256):
+        def __init__(self, num_blocks=6, num_channels=128, value_hidden=128):
             super().__init__()
             # Initial convolution
             self.conv_input = nn.Sequential(
@@ -183,16 +184,16 @@ def train_remote(cfg_dict: dict):
                 *[ResidualBlock(num_channels) for _ in range(num_blocks)]
             )
             
-            # Value head
+            # Value head - more compact
             self.value_head = nn.Sequential(
-                nn.Conv2d(num_channels, 32, kernel_size=1),
-                nn.BatchNorm2d(32),
+                nn.Conv2d(num_channels, 16, kernel_size=1),  # Reduced from 32 to 16
+                nn.BatchNorm2d(16),
                 nn.ReLU(),
                 nn.Flatten(),
-                nn.Linear(32 * 8 * 8, 256),
+                nn.Linear(16 * 8 * 8, value_hidden),  # 1024 -> value_hidden
                 nn.ReLU(),
                 nn.Dropout(0.3),
-                nn.Linear(256, 1)
+                nn.Linear(value_hidden, 1)  # value_hidden -> 1
             )
 
         def forward(self, x):
@@ -251,7 +252,11 @@ def train_remote(cfg_dict: dict):
         pin_memory=True,
     )
 
-    model = ChessEvalCNN().to(device)
+    model = ChessEvalCNN(
+        num_blocks=cfg.num_blocks,
+        num_channels=cfg.num_channels,
+        value_hidden=cfg.value_hidden
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     criterion = nn.MSELoss()
 
