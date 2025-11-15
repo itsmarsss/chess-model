@@ -83,6 +83,7 @@ def train_nnue(
     validation_size: int = 16384,
     lr: float = None,  # Override learning rate
     test_mode: bool = False,
+    test_mode_file_count: int = 1,  # Number of files to use in test mode
     max_files: int = None,  # Limit number of files to download (None = all)
     specific_file: str = None,  # Download a specific file by name (e.g., "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst")
 ):
@@ -99,6 +100,7 @@ def train_nnue(
         epoch_size: Size of each epoch
         validation_size: Validation set size
         test_mode: If True, runs minimal training for quick verification
+        test_mode_file_count: Number of files to use when test_mode is True
     """
     import subprocess
     import sys
@@ -130,9 +132,9 @@ def train_nnue(
         # Skip .tar.zst files - we only want .binpack.zst files
         compressed_files = []
         
-        # Determine max files: test_mode -> 1, specific_file -> 1, max_files param, or None (all)
+        # Determine max files: test_mode -> test_mode_file_count, specific_file -> 1, max_files param, or None (all)
         if test_mode:
-            effective_max_files = 1
+            effective_max_files = test_mode_file_count
         elif specific_file:
             effective_max_files = 1
         elif max_files is None:
@@ -511,6 +513,7 @@ def main(
     epoch_size: int = 1638400,
     validation_size: int = 16384,
     test_mode: bool = False,
+    test_mode_file_count: int = 1,  # Number of files to use in test mode
     max_files: int = 1,  # Default to 1 file for faster runs
     specific_file: str = None,  # Download specific file by name
 ):
@@ -519,12 +522,16 @@ def main(
     
     Args:
         test_mode: If True, runs a quick 1-minute test to verify setup
+        test_mode_file_count: Number of files to use when test_mode is True (default: 1)
         max_files: Limit number of files to download (default: 1 for faster runs)
         specific_file: Download a specific file by name (e.g., "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst")
     
     Example:
         # Quick test (1 minute, 1 file)
         modal run modal_train.py --test-mode
+        
+        # Quick test with 3 files
+        modal run modal_train.py --test-mode --test-mode-file-count 3
         
         # Training with 1 file (faster)
         modal run modal_train.py --dataset-name linrock/test80-2024 --max-files 1
@@ -536,7 +543,7 @@ def main(
         modal run modal_train.py --dataset-name linrock/test80-2024 --max-files 0
     """
     if test_mode:
-        print("🧪 Running in TEST MODE - quick 1-minute verification")
+        print(f"🧪 Running in TEST MODE - quick 1-minute verification with {test_mode_file_count} file(s)")
         print("This will use minimal settings to verify the setup works")
         result = train_nnue.remote(
             dataset_name=dataset_name,
@@ -549,7 +556,8 @@ def main(
             validation_size=1000,  # Small validation
             lr=learning_rate,
             test_mode=True,
-            max_files=1,  # Always 1 file in test mode
+            test_mode_file_count=test_mode_file_count,
+            max_files=None,  # Let test_mode_file_count control it
             specific_file=specific_file,
         )
     else:
@@ -567,6 +575,7 @@ def main(
             validation_size=validation_size,
             lr=learning_rate,
             test_mode=False,
+            test_mode_file_count=1,  # Not used when test_mode=False
             max_files=effective_max_files,
             specific_file=specific_file,
         )
