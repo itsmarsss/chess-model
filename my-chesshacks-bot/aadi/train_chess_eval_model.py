@@ -48,89 +48,10 @@ class Config:
 
 CFG = Config()
 
-# ---------- Model code (copied from previous script, with no changes except imports) ----------
-import numpy as np
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import chess
-from datasets import load_dataset
-from tqdm import tqdm
-
-PIECE_TO_INDEX = {
-    chess.PAWN: 0,
-    chess.KNIGHT: 1,
-    chess.BISHOP: 2,
-    chess.ROOK: 3,
-    chess.QUEEN: 4,
-    chess.KING: 5,
-}
-
-
-def fen_to_tensor(fen: str) -> torch.Tensor:
-    planes = np.zeros((13, 8, 8), dtype=np.float32)
-    board = chess.Board(fen)
-
-    for square in chess.SQUARES:
-        piece = board.piece_at(square)
-        if piece is None:
-            continue
-        base = 0 if piece.color == chess.WHITE else 6
-        p_index = PIECE_TO_INDEX[piece.piece_type] + base
-
-        file = chess.square_file(square)
-        rank = chess.square_rank(square)
-        planes[p_index, 7 - rank, file] = 1.0
-
-    stm_plane = 12
-    planes[stm_plane, :, :] = 1.0 if board.turn == chess.WHITE else 0.0
-
-    return torch.from_numpy(planes)
-
-
-class ChessEvalDataset(Dataset):
-    def __init__(self, hf_dataset, cp_scale: float):
-        self.data = hf_dataset
-        self.cp_scale = cp_scale
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        row = self.data[idx]
-        fen = row["fen"]
-        cp = row["cp"]
-        x = fen_to_tensor(fen)
-        y = float(cp) / self.cp_scale
-        return x, y
-
-
-class ChessEvalCNN(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(13, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-        )
-        self.head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-        )
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.head(x)
-        return x.squeeze(-1)
+# ---------- Model code moved into the remote worker ----------
+# NOTE: heavy dependencies (numpy, torch, datasets, python-chess, etc.) are
+# imported inside the remote function so that `modal run` executed locally
+# doesn't require these packages to be installed on the developer machine.
 
 
 # ---------- Remote training function ----------
@@ -143,12 +64,96 @@ class ChessEvalCNN(nn.Module):
 def train_remote(cfg_dict: dict):
     # Reconstruct config on the worker
     cfg = Config(**cfg_dict)
+    # Import heavy dependencies inside the worker so the local process
+    # (which executes `modal run` to register the function) doesn't need them.
+    import numpy as np
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import Dataset, DataLoader
+    import chess
+    from datasets import load_dataset
+    from tqdm import tqdm
+
+    PIECE_TO_INDEX = {
+        chess.PAWN: 0,
+        chess.KNIGHT: 1,
+        chess.BISHOP: 2,
+        chess.ROOK: 3,
+        chess.QUEEN: 4,
+        chess.KING: 5,
+    }
+
+
+    def fen_to_tensor(fen: str) -> torch.Tensor:
+        planes = np.zeros((13, 8, 8), dtype=np.float32)
+        board = chess.Board(fen)
+
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece is None:
+                continue
+            base = 0 if piece.color == chess.WHITE else 6
+            p_index = PIECE_TO_INDEX[piece.piece_type] + base
+
+            file = chess.square_file(square)
+            rank = chess.square_rank(square)
+            planes[p_index, 7 - rank, file] = 1.0
+
+        stm_plane = 12
+        planes[stm_plane, :, :] = 1.0 if board.turn == chess.WHITE else 0.0
+
+        return torch.from_numpy(planes)
+
+
+    class ChessEvalDataset(Dataset):
+        def __init__(self, hf_dataset, cp_scale: float):
+            self.data = hf_dataset
+            self.cp_scale = cp_scale
+
+        def __len__(self):
+            return len(self.data)
+
+        def __getitem__(self, idx):
+            row = self.data[idx]
+            fen = row["fen"]
+            cp = row["cp"]
+            x = fen_to_tensor(fen)
+            y = float(cp) / self.cp_scale
+            return x, y
+
+
+    class ChessEvalCNN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Sequential(
+                nn.Conv2d(13, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+            )
+            self.head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(64, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1),
+            )
+
+        def forward(self, x):
+            x = self.conv(x)
+            x = self.head(x)
+            return x.squeeze(-1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Worker] Using device: {device}")
 
     print("[Worker] Loading dataset from Hugging Face...")
-    dset = load_dataset("Lichess/chess-evaluations", split="train")
+    dset = load_dataset("Lichess/chess-position-evaluations", split="train")
     dset = dset.filter(lambda ex: ex["cp"] is not None)
 
     if cfg.max_positions is not None and cfg.max_positions < len(dset):
@@ -242,6 +247,9 @@ def train_remote(cfg_dict: dict):
                 save_path,
             )
             print(f"[Worker] Saved new best model to {save_path}")
+
+            volume.commit()
+            print(f"[Worker] Volume committed")
 
     print(f"[Worker] Training complete. Best val loss: {best_val_loss:.6f}")
     # Return the path within the volume (for logging)
