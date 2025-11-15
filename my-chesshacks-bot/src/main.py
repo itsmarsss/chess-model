@@ -24,7 +24,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class ChessEvalCNN(nn.Module):
-    def __init__(self, num_blocks=6, num_channels=128, value_hidden=128):
+    def __init__(self, num_blocks=6, num_channels=128, value_head_channels=32, value_hidden=256):
         super().__init__()
         # Initial convolution
         self.conv_input = nn.Sequential(
@@ -38,16 +38,16 @@ class ChessEvalCNN(nn.Module):
             *[ResidualBlock(num_channels) for _ in range(num_blocks)]
         )
         
-        # Value head - more compact
+        # Value head - improved capacity
         self.value_head = nn.Sequential(
-            nn.Conv2d(num_channels, 16, kernel_size=1),  # Reduced from 32 to 16
-            nn.BatchNorm2d(16),
+            nn.Conv2d(num_channels, value_head_channels, kernel_size=1),
+            nn.BatchNorm2d(value_head_channels),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(16 * 8 * 8, value_hidden),  # 1024 -> value_hidden
+            nn.Linear(value_head_channels * 8 * 8, value_hidden),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(value_hidden, 1)  # value_hidden -> 1
+            nn.Linear(value_hidden, 1)
         )
 
     def forward(self, x):
@@ -206,18 +206,24 @@ try:
     
     # Extract config to get model parameters
     config = checkpoint.get("config", {})
-    num_blocks = config.get("num_blocks", 6)  # Updated default
-    num_channels = config.get("num_channels", 128)  # Updated default
-    value_hidden = config.get("value_hidden", 128)  # New parameter
+    num_blocks = config.get("num_blocks", 6)
+    num_channels = config.get("num_channels", 128)
+    value_head_channels = config.get("value_head_channels", 32)
+    value_hidden = config.get("value_hidden", 256)
     cp_scale = config.get("cp_scale", 1000.0)
     
     # Initialize model with correct architecture
-    model = ChessEvalCNN(num_blocks=num_blocks, num_channels=num_channels, value_hidden=value_hidden).to(device)
+    model = ChessEvalCNN(
+        num_blocks=num_blocks, 
+        num_channels=num_channels, 
+        value_head_channels=value_head_channels,
+        value_hidden=value_hidden
+    ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     
     print(f"Model loaded successfully from {model_path} on {device}")
-    print(f"Model architecture: {num_blocks} blocks, {num_channels} channels, {value_hidden} value_hidden")
+    print(f"Model architecture: {num_blocks} blocks, {num_channels} channels, {value_head_channels} value_head_channels, {value_hidden} value_hidden")
 except FileNotFoundError:
     print(f"WARNING: Model file not found at {model_path}. Using random moves as fallback.")
     model = None

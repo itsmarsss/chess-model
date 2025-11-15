@@ -1,7 +1,7 @@
 # train_chess_eval_modal.py
 
 import os
-from dataclasses import dataclass
+
 
 import modal
 
@@ -36,19 +36,24 @@ cache_volume = modal.Volume.from_name(CACHE_VOLUME_NAME, create_if_missing=True)
 from dataclasses import dataclass
 
 
+
 @dataclass
 class Config:
     model_out: str = "chess_eval_cnn.pt"
-    max_positions: int = 1_000_000  # Use more data
-    train_fraction: float = 0.9
-    batch_size: int = 128  # Reduce for larger model
-    epochs: int = 100  # More epochs for convergence
-    lr: float = 5e-4  # Lower learning rate
+    max_positions: int = 100000000  # Use ALL available data (no limit)
+    val_size: int = 10000000  # Keep validation set small but meaningful
+    batch_size: int = 512  # Increased for B200 GPU (192GB memory)
+    epochs: int = 1  # Proper training needs many epochs
+    lr: float = 5e-4
+    weight_decay: float = 1e-4  # Add weight decay for regularization
+    lr_patience: int = 5  # Reduce LR if no improvement for 5 epochs
+    lr_factor: float = 0.5  # Reduce LR by half when triggered
     cp_scale: float = 1000.0
-    num_workers: int = 4
-    num_blocks: int = 6  # Reduced from 10 to 6
-    num_channels: int = 128  # Reduced from 256 to 128
-    value_hidden: int = 128  # Reduced FC layer size
+    num_workers: int = 8
+    num_blocks: int = 6  # Optimized for <10MB: 6 blocks for better depth
+    num_channels: int = 128  # Keep at 128
+    value_head_channels: int = 32  # Increased from 16 to 32
+    value_hidden: int = 256  # Increased from 128 to 256ses import dataclass
 
 
 CFG = Config()
@@ -170,7 +175,7 @@ def train_remote(cfg_dict: dict):
             return out
 
     class ChessEvalCNN(nn.Module):
-        def __init__(self, num_blocks=6, num_channels=128, value_hidden=128):
+        def __init__(self, num_blocks=6, num_channels=128, value_head_channels=32, value_hidden=256):
             super().__init__()
             # Initial convolution
             self.conv_input = nn.Sequential(
@@ -184,16 +189,16 @@ def train_remote(cfg_dict: dict):
                 *[ResidualBlock(num_channels) for _ in range(num_blocks)]
             )
             
-            # Value head - more compact
+            # Value head - improved capacity
             self.value_head = nn.Sequential(
-                nn.Conv2d(num_channels, 16, kernel_size=1),  # Reduced from 32 to 16
-                nn.BatchNorm2d(16),
+                nn.Conv2d(num_channels, value_head_channels, kernel_size=1),
+                nn.BatchNorm2d(value_head_channels),
                 nn.ReLU(),
                 nn.Flatten(),
-                nn.Linear(16 * 8 * 8, value_hidden),  # 1024 -> value_hidden
+                nn.Linear(value_head_channels * 8 * 8, value_hidden),
                 nn.ReLU(),
                 nn.Dropout(0.3),
-                nn.Linear(value_hidden, 1)  # value_hidden -> 1
+                nn.Linear(value_hidden, 1)
             )
 
         def forward(self, x):
@@ -228,9 +233,14 @@ def train_remote(cfg_dict: dict):
     else:
         print(f"[Worker] Using full dataset of {len(dset)} positions.")
 
-    split_idx = int(len(dset) * cfg.train_fraction)
-    dset_train = dset.select(range(split_idx))
-    dset_val = dset.select(range(split_idx, len(dset)))
+    # Split: use all data except for a small validation set
+    total_size = len(dset)
+    val_size = min(cfg.val_size, total_size // 10)  # Cap val size at 10% of data
+    train_size = total_size - val_size
+    
+    dset = dset.shuffle(seed=42)
+    dset_train = dset.select(range(train_size))
+    dset_val = dset.select(range(train_size, total_size))
 
     print(f"[Worker] Train size: {len(dset_train)}, Val size: {len(dset_val)}")
 
@@ -255,10 +265,25 @@ def train_remote(cfg_dict: dict):
     model = ChessEvalCNN(
         num_blocks=cfg.num_blocks,
         num_channels=cfg.num_channels,
+        value_head_channels=cfg.value_head_channels,
         value_hidden=cfg.value_hidden
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-    criterion = nn.MSELoss()
+    
+    # Compile model for faster training (PyTorch 2.0+)
+    model = torch.compile(model)
+    optimizer = torch.optim.Adam(
+        model.parameters(), 
+        lr=cfg.lr, 
+        weight_decay=cfg.weight_decay
+    )
+    # Learning rate scheduler: reduce LR when validation loss plateaus
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=cfg.lr_factor,
+        patience=cfg.lr_patience
+    )
+    criterion = nn.SmoothL1Loss()  # Huber loss - more robust to outliers than MSE
 
     # Fix deprecated API
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
@@ -304,8 +329,11 @@ def train_remote(cfg_dict: dict):
         val_loss /= val_count
 
         print(
-            f"[Worker] Epoch {epoch}: train_loss={train_loss:.6f}, val_loss={val_loss:.6f}"
+            f"[Worker] Epoch {epoch}: train_loss={train_loss:.6f}, val_loss={val_loss:.6f}, lr={optimizer.param_groups[0]['lr']:.2e}"
         )
+
+        # Step the learning rate scheduler based on validation loss
+        scheduler.step(val_loss)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
