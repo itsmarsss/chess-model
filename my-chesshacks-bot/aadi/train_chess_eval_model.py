@@ -118,7 +118,9 @@ def train_remote(cfg_dict: dict):
             fen = row["fen"]
             cp = row["cp"]
             x = fen_to_tensor(fen)
+            # Convert to float32 explicitly
             y = float(cp) / self.cp_scale
+            y = np.float32(y)  # Ensure it's float32, not float64
             return x, y
 
 
@@ -190,7 +192,8 @@ def train_remote(cfg_dict: dict):
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     criterion = nn.MSELoss()
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    # Fix deprecated API
+    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
     best_val_loss = float("inf")
 
     for epoch in range(1, cfg.epochs + 1):
@@ -203,7 +206,8 @@ def train_remote(cfg_dict: dict):
             yb = yb.to(device)
             optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
+            # Fix deprecated API
+            with torch.amp.autocast('cuda', enabled=(device.type == "cuda")):
                 preds = model(xb)
                 loss = criterion(preds, yb)
 
