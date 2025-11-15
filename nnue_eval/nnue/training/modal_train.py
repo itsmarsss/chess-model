@@ -526,7 +526,7 @@ def train_nnue(
 def main(
     dataset_name: str = "linrock/test80-2024",
     batch_size: int = 32768,  # Larger batch = better gradients
-    max_epochs: int = 15,  # More epochs for better convergence
+    max_epochs: int = 12,  # Stop before overfitting (was 15)
     features: str = "HalfKAv2_hm^",
     learning_rate: float = 8.75e-4,
     num_workers: int = 4,
@@ -538,8 +538,8 @@ def main(
     specific_file: str = None,  # Download specific file by name
     # Lambda scheduling: blend eval scores and game outcomes
     start_lambda: float = 1.0,  # Start with pure eval scores
-    end_lambda: float = 0.5,  # End with 50% eval / 50% game results
-    gamma: float = 0.995,  # Slower LR decay for longer training
+    end_lambda: float = 0.75,  # Keep trusting evals more (was 0.5) - prevents learning bad sacrifices
+    gamma: float = 0.99,  # Faster LR decay to prevent overfitting (was 0.995)
     # Loss function improvements
     pow_exp: float = 2.6,  # Penalize large errors more
     qp_asymmetry: float = 0.15,  # Penalize overconfidence
@@ -548,6 +548,8 @@ def main(
     out_offset: float = 270.0,
     in_scaling: float = 340.0,
     out_scaling: float = 380.0,
+    # Network architecture
+    layers: str = "8,32",  # Network layers: "8,32" = fast & efficient, "16,32" = balanced, "32,32" = strong but needs more data
 ):
     """
     Local entrypoint to run training on Modal.
@@ -558,10 +560,11 @@ def main(
         file_count: Number of files to use in normal mode (default: 1, use 0 for all files)
         specific_file: Download a specific file by name
         start_lambda: Lambda at first epoch (1.0 = pure evals, 0.0 = pure game results)
-        end_lambda: Lambda at last epoch (linear interpolation)
-        gamma: LR decay multiplier per epoch (0.995 = slower decay)
+        end_lambda: Lambda at last epoch (0.75 recommended to prevent learning bad sacrifices)
+        gamma: LR decay multiplier per epoch (0.99 = faster decay, prevents overfitting)
         pow_exp: Loss exponent (higher = penalize large errors more)
         qp_asymmetry: Penalty when prediction > actual (0 = symmetric)
+        layers: Network architecture as "L2,L3" (e.g., "8,32" = fast, "16,32" = balanced, "32,32" = strong)
         in_offset, out_offset, in_scaling, out_scaling: Sigmoid conversion params
             Run 'python perf_sigmoid_fitter.py' to optimize for your data
     
@@ -569,16 +572,13 @@ def main(
         # Quick test (1 minute, 1 file)
         modal run modal_train.py --test-mode
         
-        # Optimized training (high impact improvements)
-        modal run modal_train.py --file-count 5 --max-epochs 15
+        # Recommended: Anti-overfitting settings with fast network
+        modal run modal_train.py --file-count 10 --layers "8,32"
         
-        # Custom lambda schedule
-        modal run modal_train.py --start-lambda 1.0 --end-lambda 0.3
-        
-        # Optimize sigmoid params first (recommended):
-        # python perf_sigmoid_fitter.py
-        # Then use the suggested values:
-        modal run modal_train.py --in-offset 250 --out-offset 260 --in-scaling 350 --out-scaling 400
+        # Test all checkpoints after training to find best (often epoch 6-9, not 12!)
+        python serialize.py last1.ckpt last1.nnue
+        python serialize.py last2.ckpt last2.nnue
+        # ... test each model
     """
     if test_mode:
         print(f"🧪 Running in TEST MODE - quick 1-minute verification with {test_mode_file_count} file(s)")
@@ -602,14 +602,18 @@ def main(
         # Convert file_count: 0 means all files, otherwise use the specified count
         effective_max_files = None if file_count == 0 else file_count
         
-        print(f"🚀 Starting optimized training:")
-        print(f"  • Batch size: {batch_size} (larger = better gradients)")
-        print(f"  • Max epochs: {max_epochs}")
-        print(f"  • Lambda schedule: {start_lambda} → {end_lambda} (eval/result blending)")
-        print(f"  • Gamma: {gamma} (LR decay per epoch)")
+        # Parse layers parameter (e.g., "8,32" -> [8, 32])
+        layer_list = [int(x.strip()) for x in layers.split(",")]
+        
+        print(f"🚀 Starting anti-overfitting optimized training:")
+        print(f"  • Architecture: {layer_list} (3072 → {' → '.join(map(str, layer_list))} → 1)")
+        print(f"  • Batch size: {batch_size}")
+        print(f"  • Max epochs: {max_epochs} (stops before overfitting)")
+        print(f"  • Lambda: {start_lambda} → {end_lambda} (higher end_lambda = trust evals, prevent bad sacrifices)")
+        print(f"  • Gamma: {gamma} (faster decay = less overfitting)")
         print(f"  • Loss: pow={pow_exp}, asymmetry={qp_asymmetry}")
-        print(f"  • Sigmoid: in_offset={in_offset}, out_offset={out_offset}")
         print(f"  • Files: {file_count if file_count > 0 else 'all'}")
+        print(f"  💡 Tip: Test ALL checkpoints after training - best is often epoch 6-9, not last!")
         
         result = train_nnue.remote(
             dataset_name=dataset_name,
@@ -634,6 +638,7 @@ def main(
             out_offset=out_offset,
             in_scaling=in_scaling,
             out_scaling=out_scaling,
+            layers=layer_list,
         )
     print(result)
 
