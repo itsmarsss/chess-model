@@ -278,8 +278,7 @@ def train_remote(cfg_dict: dict):
         optimizer,
         mode='min',
         factor=cfg.lr_factor,
-        patience=cfg.lr_patience,
-        verbose=True
+        patience=cfg.lr_patience
     )
     criterion = nn.SmoothL1Loss()  # Huber loss - more robust to outliers than MSE
 
