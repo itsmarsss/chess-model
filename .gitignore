@@ -21,6 +21,8 @@ env/
 dist/
 build/
 
+nnue_eval_aadi/
+
 # Modal
 .modal/
 
