@@ -85,13 +85,16 @@ def test_func(ctx: GameContext):
     nnue = get_nnue()
     
     if nnue is not None:
+        # Get search depth from environment (default: 20 plies)
+        search_depth = int(os.getenv("SEARCH_DEPTH", "5"))
+        
         # Evaluate all legal moves and pick the best one
         move_scores = {}
         for move in legal_moves:
             # Make the move
             ctx.board.push(move)
-            # Evaluate the resulting position
-            score = nnue.evaluate_board(ctx.board)
+            # Evaluate the resulting position with search
+            score = nnue.evaluate_board(ctx.board, depth=search_depth)
             # Undo the move
             ctx.board.pop()
             move_scores[move] = score

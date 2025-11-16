@@ -150,12 +150,13 @@ class NNUE:
                     break
         return lines
     
-    def evaluate_fen(self, fen: str) -> int:
+    def evaluate_fen(self, fen: str, depth: int = 20) -> int:
         """
-        Evaluate a position from a FEN string.
+        Evaluate a position from a FEN string using search.
         
         Args:
             fen: FEN string of the position
+            depth: Search depth in plies (default: 20)
             
         Returns:
             Evaluation in centipawns (positive = white better, negative = black better)
@@ -167,52 +168,60 @@ class NNUE:
             # Set position
             self._send_command(f"position fen {fen}")
             
-            # Get static evaluation using eval command
-            self._send_command("eval")
+            # Use search instead of static eval
+            self._send_command(f"go depth {depth}")
             
-            # Send isready right after to mark end of eval output
-            self._send_command("isready")
-            
-            # Read eval output until we hit readyok
+            # Read search output until we get bestmove
             eval_score = 0
             start_time = time.time()
             
-            while time.time() - start_time < 1.0:
-                line = self._read_line(0.01)
+            while time.time() - start_time < 30.0:  # Increased timeout for search
+                line = self._read_line(0.1)
                 if not line:
                     continue
                 
-                # Stop when we hit readyok (end marker)
-                if "readyok" in line:
-                    break
+                # Parse info lines with score
+                # Format: "info depth 15 ... score cp 25 ..."
+                if "info" in line and "score cp" in line:
+                    try:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part == "cp" and i + 1 < len(parts):
+                                eval_score = int(parts[i + 1])
+                    except (ValueError, IndexError):
+                        pass
                 
-                # Look for "Final evaluation" line
-                if "Final evaluation" in line:
-                    # Parse from format like "Final evaluation       +0.09 (white side)"
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if part in ["evaluation", "NNUE"] and i + 1 < len(parts):
-                            try:
-                                score_str = parts[i + 1]
-                                # Convert from pawns to centipawns
-                                eval_score = int(float(score_str) * 100)
-                            except (ValueError, IndexError):
-                                pass
+                # Handle mate scores
+                elif "info" in line and "score mate" in line:
+                    try:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part == "mate" and i + 1 < len(parts):
+                                mate_in = int(parts[i + 1])
+                                # Convert mate to large score
+                                eval_score = 10000 if mate_in > 0 else -10000
+                    except (ValueError, IndexError):
+                        pass
+                
+                # Stop when we get bestmove
+                if "bestmove" in line:
+                    break
             
             return eval_score
     
-    def evaluate_board(self, board) -> int:
+    def evaluate_board(self, board, depth: int = 20) -> int:
         """
         Evaluate a python-chess Board object.
         
         Args:
             board: python-chess Board object
+            depth: Search depth in plies (default: 20)
             
         Returns:
             Evaluation in centipawns (positive = white better, negative = black better)
         """
         fen = board.fen()
-        return self.evaluate_fen(fen)
+        return self.evaluate_fen(fen, depth)
     
     def cleanup(self):
         """Clean up resources."""
