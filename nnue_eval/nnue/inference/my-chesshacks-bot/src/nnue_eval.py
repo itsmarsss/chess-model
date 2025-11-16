@@ -27,6 +27,7 @@ class NNUE:
         inference_dir = Path(__file__).parent.parent.parent  # inference/
         stockfish_paths = [
             inference_dir / "custom" / "src" / "stockfish",
+            inference_dir / "stockfish-official" / "src" / "stockfish",
             inference_dir / "Stockfish" / "src" / "stockfish",
             Path("/usr/local/bin/stockfish"),
             Path("/opt/homebrew/bin/stockfish"),

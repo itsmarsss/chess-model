@@ -5,7 +5,7 @@ from dataclasses import dataclass
 @dataclass
 class ModelConfig:
     L1: int = 3072
-    L2: int = 31  # 2x capacity for 10B dataset (L2+1=32, divisible by 16)
+    L2: int = 15  # L2+1=16, divisible by 16
     L3: int = 32  # Standard hidden layer size
 
 

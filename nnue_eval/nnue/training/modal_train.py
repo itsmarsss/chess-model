@@ -561,8 +561,8 @@ def main(
     file_count: int = 0,  # USE ALL 10B POSITIONS! (0 = all files)
     specific_file: str = None,  # Download specific file by name
     # Lambda scheduling: blend eval scores and game outcomes
-    start_lambda: float = 1.0,  # Start with pure eval scores
-    end_lambda: float = 0.6,  # With 10B positions, trust game outcomes MORE (lower = more WDL weight)
+    start_lambda: float = 0.8,  # Start LOWER to learn from game outcomes earlier
+    end_lambda: float = 0.5,  # Trust game outcomes even more (avoid queen sacrifices)
     gamma: float = 0.985,  # SLOWER LR decay for massive dataset (more gradual learning)
     # Loss function improvements
     pow_exp: float = 2.6,  # Penalize large errors more
@@ -573,7 +573,7 @@ def main(
     in_scaling: float = 340.0,
     out_scaling: float = 380.0,
     # Network architecture
-    layers: str = "31,32",  # L2=31 (2x capacity), L2+1=32 divisible by 16
+    layers: str = "15,32",  # L2=15, L2+1=16 divisible by 16
     network_save_period: int = 1,  # Checkpoint EVERY epoch to find best
 ):
     """
