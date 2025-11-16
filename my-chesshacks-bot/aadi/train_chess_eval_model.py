@@ -39,11 +39,11 @@ from dataclasses import dataclass
 
 @dataclass
 class Config:
-    model_out: str = "chess_eval_cnn.pt"
-    max_positions: int = 100000000  # Use ALL available data (no limit)
-    val_size: int = 10000000  # Keep validation set small but meaningful
+    model_out: str = "chess_eval_cnn_bigdata.pt"
+    max_positions: int = 300000000  # Use ALL available data (no limit)
+    val_size: int = 30000000  # Keep validation set small but meaningful
     batch_size: int = 512  # Increased for B200 GPU (192GB memory)
-    epochs: int = 1  # Proper training needs many epochs
+    epochs: int = 5  # Proper training needs many epochs
     lr: float = 5e-4
     weight_decay: float = 1e-4  # Add weight decay for regularization
     lr_patience: int = 5  # Reduce LR if no improvement for 5 epochs

@@ -219,7 +219,15 @@ try:
         value_head_channels=value_head_channels,
         value_hidden=value_hidden
     ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    
+    # Handle state_dict from compiled model (torch.compile adds _orig_mod. prefix)
+    state_dict = checkpoint["model_state_dict"]
+    
+    # Remove _orig_mod. prefix if present (from torch.compile)
+    if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    
+    model.load_state_dict(state_dict)
     model.eval()
     
     print(f"Model loaded successfully from {model_path} on {device}")
